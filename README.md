@@ -1,176 +1,206 @@
+# OwnNetBot
 
-# 🌐 OwnNetBot — Telegram бот для продажи VPN-подписок
+Telegram-бот + веб-сайт для продажи VPN-подписок.
+Два продукта: **Amnezia WG** (конфиг `.conf` через S3) и **Vless** (ссылка подписки).
+Целевая аудитория — 50–200 клиентов на старте.
 
-Асинхронный Telegram-бот, написанный на **Python (aiogram)**  
-для автоматизации продажи и продления VPN-подписок панели **PasarGuard**  
-с поддержкой ручных платежей (СБП, Telegram Stars, ЮKassa и др.)
+## Стек
 
----
+| Слой | Технологии |
+|------|-----------|
+| Бот | Python 3.11+, aiogram 3, APScheduler |
+| Бэкенд | FastAPI, Uvicorn, Nginx |
+| Фронтенд | React (Vite) |
+| БД | PostgreSQL 16.4 (asyncpg), Alembic |
+| Хранилище | Beget S3 (aioboto3) |
+| Платежи | ЮKassa (webhook), СБП (ручной режим) |
+| VPN-панели | AlexisHW/amneziawg-web-ui, PasarGuard/panel |
 
-## 🚀 Возможности
+## Инфраструктура (Beget, Санкт-Петербург)
 
-- 💬 Простое и понятное меню для пользователей  
-- 🔐 Проверка подписки на канал перед использованием  
-- 💳 Ручная покупка VPN-подписок (СБП/чек админу)  
-- 🧾 Отображение активных подписок  
-- 🧠 Автоматическое отключение по истечении срока  
-- 🛠 Админ-панель:
-  - подтверждение оплат  
-  - продление и выдача подписок  
-  - экспорт заказов в Excel  
-- 🧩 SQLite-база данных и резервное копирование  
-- 🕐 Планировщик APScheduler (проверка подписок + backup)
-- 📜 Логирование всех событий в консоль и файл
+```
+VPS-1 (App)          VPS-2 (DB)            S3 (Beget)
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│ Telegram Bot │     │ PostgreSQL   │     │ vpn-configs/ │
+│ FastAPI      │────▶│ 16.4         │     │  awg/{uid}/  │
+│ Nginx        │     │ port 5432    │     │  {sub}.conf  │
+│ React SPA    │     └──────────────┘     └──────────────┘
+└──────────────┘       приватная сеть
+        │
+        ▼
+  VPN-панели (отдельные серверы)
+  ├── AWG Panel
+  └── PasarGuard Panel
+```
 
----
+## Текущее состояние репозитория
 
-## ⚙️ Установка
+Проект находится в начале **Этапа 1**. Сейчас в репозитории:
 
-### 1️⃣ Клонируй репозиторий
+```
+onbot_site/
+├── bot.py                  # монолит 77 КБ — рабочий бот (polling + SQLite)
+├── setup_structure.py      # скрипт создания модульной структуры (30 файлов)
+├── alembic/                # инициализирован, миграций нет
+│   ├── env.py
+│   └── versions/
+├── alembic.ini
+├── requirements.txt        # старый (aiogram, aiosqlite, dotenv, apscheduler, openpyxl)
+├── images/                 # скриншоты для инструкций в боте
+├── about.txt               # текст «О нас» для бота
+├── welcome.txt             # приветственное сообщение
+└── .gitignore
+```
+
+**`setup_structure.py`** при запуске из корня создаст модульную структуру:
+
+```
+├── config.py                     # pydantic-settings, все переменные из .env
+├── .env.example                  # шаблон переменных окружения
+├── requirements.txt              # обновлённый (+ asyncpg, fastapi, alembic, pyjwt…)
+├── bot/
+│   ├── main.py                   # точка входа: Bot + Dispatcher + APScheduler
+│   ├── states.py                 # FSM-состояния (AdminState)
+│   ├── handlers/
+│   │   ├── start.py              # /start, проверка подписки на канал, «О нас»
+│   │   ├── subscription.py       # покупка, выбор тарифа, «Мои подписки»
+│   │   ├── instructions.py       # инструкции по платформам (Vless / AWG)
+│   │   └── admin.py              # одобрение заказов, продление, экспорт, бэкап
+│   ├── keyboards/
+│   │   ├── main.py               # главное меню
+│   │   ├── subscription.py       # клавиатуры тарифов и админ-кнопки
+│   │   └── instructions.py       # навигация по инструкциям
+│   ├── middlewares/
+│   │   └── auto_answer.py        # авто-ответ на callback_query
+│   ├── services/
+│   │   ├── subscription.py       # бизнес-логика активации/продления
+│   │   └── scheduler.py          # бэкап БД, проверка истечения подписок
+│   └── utils/
+│       ├── helpers.py            # вспомогательные функции, цены Amnezia
+│       └── text_loader.py        # загрузка about.txt / welcome.txt
+├── db/
+│   ├── sqlite_legacy.py          # init_db для SQLite (временный)
+│   └── pool.py                   # asyncpg connection pool (заглушка)
+├── vpn_api/                      # VPN-адаптеры — заглушка
+├── payments/                     # ЮKassa — заглушка
+├── s3/                           # Beget S3 клиент — заглушка
+└── auth/                         # JWT + OTP — заглушка
+```
+
+> После запуска скрипта и проверки — удалить `bot.py` и `setup_structure.py`.
+
+## Что сейчас работает
+
+- Telegram-бот в режиме polling (через `bot.py`)
+- SQLite (`orders2.db`): таблицы `orders`, `user_subscriptions`, `users`, `used_tests`
+- Ручные платежи через СБП (ссылка в кнопке)
+- Ручная выдача конфигов/ссылок администратором
+- Проверка подписки на Telegram-канал
+- Инструкции с картинками (Vless: Android/iOS/Windows, AWG: Android/iOS/Windows)
+- Планировщик: бэкап БД (ежедневно), проверка истечения подписок (каждый час), уведомление за 3 дня
+- Экспорт заказов в Excel
+- Тестовые периоды (Vless — 3 дня, AWG — 1 день, однократно)
+
+## Дорожная карта
+
+### Этап 1 — Миграция (текущий)
+
+Три параллельных задачи:
+
+1. **Реструктуризация** — `setup_structure.py` → запуск → проверка → удаление монолита
+2. **SQLite → PostgreSQL** — `config.py` → `db/pool.py` → переписать все `aiosqlite.connect()` на asyncpg → Alembic миграции
+3. **Polling → Webhook** — Nginx reverse proxy → Uvicorn → `dp.start_polling()` заменить на webhook-обработчик
+
+Порядок: `config.py` → `db/pool.py` → хендлеры на asyncpg → Alembic → webhook → тест.
+
+### Этап 2 — Автоматизация платежей и VPN
+
+- ЮKassa: webhook `payment.succeeded`, автосоздание заказа
+- AWG-адаптер: `VPNPanelAdapter` ABC → `AmneziaWGAdapter`
+- S3-интеграция: загрузка/выдача `.conf` через aioboto3
+
+### Этап 3 — Веб-сайт и личный кабинет
+
+- FastAPI бэкенд (`/api/v1/`)
+- React фронтенд (Vite)
+- Двусторонняя авторизация (Telegram ↔ email/пароль)
+- JWT (access 15 мин / refresh 30 дней httpOnly)
+- OTP по email (6 цифр, SHA-256, TTL 10 мин)
+- Правило доступа к VPN: `tg_id IS NOT NULL`
+
+Страницы:
+- Публичные: `/`, `/pricing`, `/instructions`, `/about`, `/auth/*`
+- Кабинет: `/dashboard`, `/dashboard/subscriptions`, `/dashboard/configs`, `/dashboard/payments`, `/dashboard/profile`
+- Админка: `/admin`, `/admin/users`, `/admin/orders`, `/admin/nodes`, `/admin/broadcast`
+
+### Этап 4 — Мультипанельность
+
+- PasarGuard адаптер
+- `VPNRouter` (round-robin → least-connections → geo)
+- Таблица `vpn_nodes` — добавление ноды = добавление строки в БД
+
+### Этап 5 — Мониторинг и масштабирование
+
+- Prometheus `/metrics`
+- structlog (JSON-логи)
+- `feature_flags` в БД
+- API versioning (`/api/v1/`)
+
+## Тарифы
+
+**Vless (5 устройств):**
+
+| Период | Цена |
+|--------|------|
+| Тест 3 дня | бесплатно |
+| 1 месяц | 320 ₽ |
+| 3 месяца | 770 ₽ |
+
+**Amnezia WG:**
+
+| Устройства | 1 мес | 2 мес | 3 мес | 6 мес | 12 мес |
+|-----------|-------|-------|-------|-------|--------|
+| 1 | 187 ₽ | 340 ₽ | 505 ₽ | 898 ₽ | 1 571 ₽ |
+| 3 | 449 ₽ | 842 ₽ | 1 178 ₽ | 2 020 ₽ | 3 366 ₽ |
+| 5 | 655 ₽ | 1 216 ₽ | 1 683 ₽ | 2 805 ₽ | 4 488 ₽ |
+
+Тест AWG — 1 день, бесплатно, однократно.
+
+## Быстрый старт (текущая версия)
+
 ```bash
-git clone https://github.com/yourusername/ownnetbot.git
-cd ownnetbot
-````
+git clone https://github.com/rockfactor/onbot_site.git
+cd onbot_site
 
-### 2️⃣ Установи зависимости
-
-```bash
 python3 -m venv venv
-source venv/bin/activate   # Linux/macOS
-venv\Scripts\activate      # Windows
-
+source venv/bin/activate
 pip install -r requirements.txt
-```
 
-Пример содержимого `requirements.txt`:
+# Создать .env с переменными:
+# BOT_TOKEN, ADMIN_ID, CHANNEL_USERNAME, SBER_URL
 
-```
-aiogram==3.13.1
-python-dotenv==1.0.1
-apscheduler==3.10.4
-openpyxl==3.1.5
-```
-
-### 3️⃣ Настрой `.env`
-
-Создай файл `.env` и добавь свои данные:
-
-```
-BOT_TOKEN=твой_токен_бота
-ADMIN_ID=123456789
-CHANNEL_USERNAME=own_netbot
-SBER_URL=https://your-payment-link.ru/pay
-```
-
-### 4️⃣ Запусти бота
-
-```bash
 python bot.py
 ```
 
----
+## Быстрый старт (после реструктуризации)
 
-## 🧱 Структура проекта
-
-```
-ownnetbot/
-├── bot.py                   # основной код бота
-├── orders.db                # база данных SQLite
-├── .env                     # переменные окружения
-├── purchases.log             # логи покупок
-├── backups/                 # резервные копии БД
-├── screenshots/             # изображения для README
-├── requirements.txt         # зависимости
-└── README.md                # описание проекта
+```bash
+python3 setup_structure.py    # создаёт модульную структуру
+cp .env.example .env          # заполнить значения
+pip install -r requirements.txt
+python -m bot.main            # запуск через новую точку входа
+# После проверки: удалить bot.py и setup_structure.py
 ```
 
----
+## Ключевые архитектурные решения
 
-## 🧰 Основные команды
+- **Bot instance** передаётся через DI aiogram 3, не глобальная переменная
+- **`notify_admin_about_order(bot, ...)`** — `bot` первый параметр
+- **Scheduler jobs** передают `args=[bot]` для функций, отправляющих сообщения
+- **Все настройки** через `config.settings` (pydantic-settings), никогда `os.getenv()` напрямую
+- **VPN-адаптеры** — паттерн ABC (`VPNPanelAdapter`), добавление панели = новый класс
+- **VPN-ноды** — таблица `vpn_nodes`, добавление ноды = INSERT в БД
 
-| Команда / Кнопка                         | Описание                                  |
-| ---------------------------------------- | ----------------------------------------- |
-| `/start`                                 | Запуск бота и проверка подписки           |
-| 🛒 **Купить подписку**                   | Выбор тарифа и получение ссылки на оплату |
-| 📖 **Мои подписки**                      | Просмотр активных VPN-доступов            |
-| 📊 **Экспорт заказов** *(только админ)*  | Excel-отчёт о покупках                    |
-| ✅ **Выдать / Продлить** *(только админ)* | Активация подписки пользователю           |
+## Лицензия
 
----
-
-## 🗄️ База данных
-
-#### Таблица `orders`
-
-| Поле              | Тип       | Описание         |
-| ----------------- | --------- | ---------------- |
-| id                | INTEGER   | ID заказа        |
-| user_id           | INTEGER   | Telegram ID      |
-| username          | TEXT      | Имя пользователя |
-| subscription_type | TEXT      | Тип подписки     |
-| amount            | INTEGER   | Стоимость        |
-| status            | TEXT      | Статус заказа    |
-| created_at        | TIMESTAMP | Дата создания    |
-
-#### Таблица `user_subscriptions`
-
-| Поле              | Тип       | Описание             |
-| ----------------- | --------- | -------------------- |
-| id                | INTEGER   | ID записи            |
-| user_id           | INTEGER   | Telegram ID          |
-| subscription_type | TEXT      | Тип подписки         |
-| subscription_link | TEXT      | Ссылка для активации |
-| expires_at        | TIMESTAMP | Дата истечения       |
-| is_active         | BOOLEAN   | Активна ли подписка  |
-
----
-
-## 🛠️ Админ-панель
-
-📦 После подтверждения оплаты админ получает сообщение:
-
-```
-💰 Новый заказ #42
-👤 @username
-📦 Подписка 3 месяца
-💸 770 руб.
-```
-
-При нажатии кнопки **“✅ Выдать/Продлить”** бот запрашивает ссылку VPN
-и активирует/продлевает доступ пользователю.
-
----
-
-## 🧾 Резервное копирование и планировщик
-
-Используется `apscheduler`:
-
-* ⏰ Проверка истечения подписок — **каждый час**
-* 💾 Резервная копия базы `orders.db` — **раз в сутки**
-
-Бэкапы сохраняются в `/backups/`.
-
----
-
-## 🛡️ Безопасность
-
-* Проверка подписки на Telegram-канал
-* Только администратор может одобрять заказы
-* Исключено выполнение SQL-инъекций (все запросы параметризованы)
-* Безопасная загрузка конфигурации через `.env`
-
----
-
-## 🧑‍💻 Разработчик
-
-**OwnNetBot** — проект для автоматизации VPN-продаж.
-Разработчик: [@YourHandle](https://t.me/YourHandle)
-GitHub: [github.com/yourusername/ownnetbot](https://github.com/yourusername/ownnetbot)
-
----
-
-## 🏁 Лицензия
-
-MIT License © 2025 — свободное использование и модификация при указании автора.
-
-```
+MIT © 2025
