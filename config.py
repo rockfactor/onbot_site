@@ -12,14 +12,42 @@
 ВАЖНО: никогда не обращайтесь к os.getenv() напрямую в коде проекта —
 только через `from config import settings`. Это единственная точка,
 где определяются значения по умолчанию и правила валидации.
+
+IDN: основной домен проекта — кириллический (своясеть.рокфактор.рф).
+Telegram Bot API, Let's Encrypt и ЮКасса принимают только ASCII-имена,
+поэтому все внешние URL отдаются в punycode-форме. В .env домен можно
+писать кириллицей — преобразование делает свойство webhook_url.
 """
 from __future__ import annotations
 
 from typing import Literal, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def to_punycode_url(url: str) -> str:
+    """
+    Привести хост в URL к ASCII (punycode), сохранив схему, порт и путь.
+
+        https://своясеть.рокфактор.рф/webhook/bot
+        -> https://xn--b1ag0akch4eua.xn--80atbndhfop.xn--p1ai/webhook/bot
+
+    Для уже-ASCII доменов возвращает URL без изменений.
+    """
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+    except (UnicodeError, UnicodeDecodeError):
+        # Некорректный или пустой хост — отдаём как есть,
+        # ошибку поймает валидация или сам вызывающий сервис.
+        ascii_host = host
+    netloc = f"{ascii_host}:{parts.port}" if parts.port else ascii_host
+    return parts._replace(netloc=netloc).geturl()
 
 
 class Settings(BaseSettings):
@@ -53,7 +81,8 @@ class Settings(BaseSettings):
     DB_CONNECT_TIMEOUT: float = 10.0
 
     # ── Webhook (этап 1) ─────────────────────────────────────────────────────
-    # WEBHOOK_HOST — схема + домен без завершающего слэша, напр. https://own-net.ru
+    # WEBHOOK_HOST — схема + домен без завершающего слэша.
+    # Можно писать кириллицей: https://своясеть.рокфактор.рф
     WEBHOOK_HOST: str = ""
     WEBHOOK_PATH: str = "/webhook/bot"
     WEBHOOK_SECRET: str = ""
@@ -79,8 +108,13 @@ class Settings(BaseSettings):
     S3_SECRET_KEY: str = ""
 
     # ── VPN-панели (этапы 2–4) ───────────────────────────────────────────────
+    # AWG: панель AlexisHW работает на HTTP Basic Auth, не на API-ключе
     AWG_API_URL: str = ""
-    AWG_API_KEY: str = ""
+    AWG_API_USER: str = ""
+    AWG_API_PASSWORD: str = ""
+    AWG_SERVER_ID: str = ""
+
+    # PasarGuard: постоянный API-ключ из POST /api/api_key
     PASARGUARD_API_URL: str = ""
     PASARGUARD_API_KEY: str = ""
 
@@ -115,10 +149,25 @@ class Settings(BaseSettings):
 
     @property
     def webhook_url(self) -> str:
-        """Полный URL вебхука, который регистрируется в Telegram."""
+        """
+        URL вебхука в punycode — именно он передаётся в Telegram setWebhook.
+        Bot API не принимает не-ASCII домены.
+        """
+        if not self.WEBHOOK_HOST:
+            return ""
+        return to_punycode_url(f"{self.WEBHOOK_HOST.rstrip('/')}{self.WEBHOOK_PATH}")
+
+    @property
+    def webhook_url_display(self) -> str:
+        """Тот же URL в исходном виде — для логов и сообщений админу."""
         if not self.WEBHOOK_HOST:
             return ""
         return f"{self.WEBHOOK_HOST.rstrip('/')}{self.WEBHOOK_PATH}"
+
+    @property
+    def yookassa_return_url(self) -> str:
+        """return_url для ЮКассы — тоже требует ASCII-домен."""
+        return to_punycode_url(self.YOOKASSA_RETURN_URL)
 
     # ── Валидация ────────────────────────────────────────────────────────────
 
@@ -139,8 +188,12 @@ class Settings(BaseSettings):
                 "ENV=prod, но не заданы обязательные переменные: "
                 + ", ".join(missing)
             )
-        if self.WEBHOOK_HOST and not self.WEBHOOK_HOST.startswith("https://"):
+        if not self.WEBHOOK_HOST.startswith("https://"):
             raise ValueError("WEBHOOK_HOST должен начинаться с https:// (требование Telegram)")
+        # Проверяем, что домен вообще преобразуется в ASCII —
+        # иначе setWebhook упадёт уже в рантайме.
+        if not self.webhook_url:
+            raise ValueError("WEBHOOK_HOST не удалось привести к punycode")
         return self
 
 
