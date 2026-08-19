@@ -1,0 +1,55 @@
+# Telegram-бот OwnNetBot
+#
+# Устанавливается deploy/vps1-app/setup.sh в /etc/systemd/system/
+#
+# Логи идут в stdout и попадают в journald — файловый лог намеренно
+# не используется: purchases.log в рабочем каталоге однажды уже утёк в git.
+#   journalctl -u ownnetbot-bot -f
+
+[Unit]
+Description=OwnNetBot Telegram bot
+Documentation=https://github.com/rockfactor/onbot_site
+After=network-online.target
+Wants=network-online.target
+
+# Ограничение рестартов задаётся в [Unit], а не в [Service]:
+# начиная с systemd 229 в [Service] эти ключи игнорируются.
+# Пять падений за две минуты -> останавливаемся, чтобы это было видно
+# в статусе, а не крутилось бесконечно.
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+[Service]
+Type=simple
+User=ownnetbot
+Group=ownnetbot
+WorkingDirectory=/opt/ownnetbot
+ExecStart=/opt/ownnetbot/venv/bin/python -m bot.main
+
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ownnetbot-bot
+
+# ── Изоляция процесса ────────────────────────────────────────────────────────
+# Бот держит токен и ходит в БД — ограничиваем ему всё лишнее
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Каталог с кодом доступен только на чтение; на запись — ничего
+ReadOnlyPaths=/opt/ownnetbot
+
+[Install]
+WantedBy=multi-user.target
