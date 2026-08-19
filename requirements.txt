@@ -10,9 +10,6 @@ sqlalchemy[asyncio]==2.0.31
 alembic==1.13.2
 greenlet==3.0.3
 
-# ── Legacy SQLite (удалить после миграции handlers) ──────────────────────────
-aiosqlite==0.20.0
-
 # ── API + фронтенд-раздача (этап 3) ──────────────────────────────────────────
 fastapi==0.111.0
 uvicorn[standard]==0.29.0
