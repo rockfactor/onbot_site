@@ -1,0 +1,19 @@
+# Скрипты и конфиги для Linux-серверов — всегда LF.
+# CRLF в shell-скрипте ломает его на сервере:
+# bash: $'\r': command not found
+*.sh            text eol=lf
+*.service       text eol=lf
+*.conf          text eol=lf
+*.tmpl          text eol=lf
+*.py            text eol=lf
+*.md            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+.env.example    text eol=lf
+deploy/vps1-app/logrotate/* text eol=lf
+
+# Бинарные файлы не трогать
+*.png binary
+*.jpg binary
+*.xlsx binary
+*.zip binary
