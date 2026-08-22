@@ -13,19 +13,51 @@ logger = logging.getLogger("ownnetbot")
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
+# Запасная кодировка: файлы правят на сервере, и «Блокнот» или вставка через
+# терминал с однобайтовой кодировкой легко сохраняют их в CP1251.
+FALLBACK_ENCODING = "cp1251"
+
 _cache: dict[str, str | None] = {"about": None, "welcome": None}
 
 
+def _decode(raw: bytes, filename: str) -> str | None:
+    """Байты → текст. UTF-8, при неудаче — CP1251, иначе None.
+
+    `utf-8-sig` прозрачно снимает BOM (его дописывает «Блокнот» в режиме
+    «UTF-8 с BOM»); для файла без BOM результат тот же, что у `utf-8`.
+    """
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    try:
+        text = raw.decode(FALLBACK_ENCODING)
+    except UnicodeDecodeError:
+        logger.error(
+            "Файл %s не читается ни как UTF-8, ни как %s — текст не загружен",
+            filename, FALLBACK_ENCODING)
+        return None
+    logger.warning(
+        "Файл %s сохранён не в UTF-8, прочитан как %s. Пересохраните его "
+        "в UTF-8, иначе часть символов может отображаться неверно",
+        filename, FALLBACK_ENCODING)
+    return text
+
+
 def _read(filename: str) -> str | None:
+    """Текст файла или None. Не бросает исключений: тексты не критичны,
+    и битый about.txt не должен ронять бота на старте."""
     path = BASE_DIR / filename
     try:
-        return path.read_text(encoding="utf-8").strip()
+        raw = path.read_bytes()
     except FileNotFoundError:
         logger.warning("Файл %s не найден (%s)", filename, path)
         return None
     except OSError:
         logger.exception("Ошибка чтения %s", filename)
         return None
+    text = _decode(raw, filename)
+    return text.strip() if text is not None else None
 
 
 def get_about_text() -> str:
