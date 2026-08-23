@@ -9,7 +9,7 @@
 |---|---|---|---|
 | **VPS-1** | бот, API, nginx, статика React | `своясеть.рокфактор.рф` | да |
 | **VPS-2** | только PostgreSQL 16 | — | нет |
-| **AWG-панель** | AlexisHW/amneziawg-web-ui | `ge01awg.rockfactor.ru` (`144.31.246.234`) | нет |
+| **AWG-панель** | AlexisHW/amneziawg-web-ui, Германия (u1Host) | `ge01awg.rockfactor.ru` (`144.31.246.234`) | нет |
 | **PasarGuard** | VLESS-панель, **ещё не установлена** | `own.rockfactor.ru` (`159.194.204.110`) | нет |
 
 Серверы связаны приватной сетью Beget. Публично доступны только 80 и 443 на VPS-1.

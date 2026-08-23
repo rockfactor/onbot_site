@@ -5,7 +5,7 @@
 
 | Панель | Сервер | Адрес | Авторизация | Линейка |
 |---|---|---|---|---|
-| AlexisHW/amneziawg-web-ui | Грузия, `144.31.246.234` | `ge01awg.rockfactor.ru` | HTTP Basic Auth | Amnezia WG |
+| AlexisHW/amneziawg-web-ui | Германия, u1Host, `144.31.246.234` | `ge01awg.rockfactor.ru` | HTTP Basic Auth | Amnezia WG |
 | PasarGuard | Beget SPB, `159.194.204.110` | `own.rockfactor.ru` | постоянный API-ключ | Vless |
 
 **Статус:** AWG-панель работает. **PasarGuard ещё не установлена** — порт
