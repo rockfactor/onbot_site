@@ -1,12 +1,19 @@
 # VPN-панели
 
-Панели развёрнуты отдельно от монорепозитория и уже работают. Этот документ —
-о том, как к ним подключается бот и как ограничить к ним доступ.
+Панели развёрнуты отдельно от монорепозитория. Этот документ — о том, как к ним
+подключается бот и как ограничить к ним доступ.
 
-| Панель | Адрес | Авторизация | Продуктовая линейка |
-|---|---|---|---|
-| AlexisHW/amneziawg-web-ui | `awg-de.rockfactor.ru:8080` | HTTP Basic Auth | Amnezia WG |
-| PasarGuard | `ownnet.rockfactor.ru:8982/pg-panel/` | постоянный API-ключ | Vless |
+| Панель | Сервер | Адрес | Авторизация | Линейка |
+|---|---|---|---|---|
+| AlexisHW/amneziawg-web-ui | Грузия, `144.31.246.234` | `ge01awg.rockfactor.ru` | HTTP Basic Auth | Amnezia WG |
+| PasarGuard | Beget SPB, `159.194.204.110` | `own.rockfactor.ru` | постоянный API-ключ | Vless |
+
+**Статус:** AWG-панель работает. **PasarGuard ещё не установлена** — порт
+не выбран, он определится при развёртывании. План развёртывания:
+[`pasarguard/README.md`](pasarguard/README.md), там панель закрывается
+за внешним nginx на 443 и админским WireGuard, без публичного нестандартного
+порта. Пока панели нет, `PASARGUARD_API_URL` в `.env` оставляем пустым:
+адаптер `vpn_api/pasarguard.py` ещё не написан, линейка Vless не подключена.
 
 ## Главное: панели не должны быть доступны всему интернету
 
@@ -14,15 +21,26 @@
 равна компрометации всего бизнеса: злоумышленник получает доступ к трафику
 покупателей и может выдавать себе конфигурации бесплатно.
 
-Сейчас обе панели открыты на публичных адресах с нестандартными портами.
 Нестандартный порт защитой не является — массовые сканеры находят такие сервисы
 за часы, а автор AWG-панели прямо предупреждает в README, что Basic Auth
-подбирается перебором.
+подбирается перебором. Поэтому для PasarGuard порт публичным вообще не делаем:
+панель выставляется через nginx на 443 с вайтлистом, а не «спрятанным» портом.
 
 Минимально необходимое: доступ только с IP сервера приложения и с вашего
 административного IP.
 
 ## AWG-панель: ограничение по IP
+
+> **Актуальная инструкция — [`awg/README.md`](awg/README.md).** Там доступ
+> ограничивается на уровне хоста (nginx + `ufw`), панель слушает только
+> `127.0.0.1:8080`, а клиенты подключаются напрямую к `51820/udp`
+> на `ge01awg.rockfactor.ru`. Схема с каскадом через `on.rockfactor.ru`
+> выведена из эксплуатации — обычный WireGuard между клиентом и релеем
+> опознаётся DPI по сигнатуре, и трафик к релею заблокирован.
+>
+> Вариант ниже (`IP_LIST` + встроенный certbot панели) оставлен для истории:
+> вайтлист внутри контейнера видит адреса через Docker-сеть, а не реальные
+> источники, и встроенный certbot конфликтует с внешним nginx за порт 80.
 
 У панели есть переменная `IP_LIST` — она подставляется в nginx внутри
 контейнера как список `allow`.
@@ -61,17 +79,28 @@ Let's Encrypt, иначе проверка не пройдёт.
 
 ## PasarGuard: ограничение через firewall
 
+> Панель пока не установлена. Актуальный порядок развёртывания — в
+> [`pasarguard/README.md`](pasarguard/README.md): панель слушает loopback,
+> наружу её отдаёт nginx на 443, публичным остаётся только путь `/sub/`.
+> Порт панели ниже — плейсхолдер до момента установки.
+
 Своего вайтлиста у панели нет, поэтому ограничиваем на уровне хоста:
 
 ```bash
-sudo ufw allow from ПУБЛИЧНЫЙ_IP_VPS1 to any port 8982 proto tcp
-sudo ufw allow from ВАШ_АДМИНСКИЙ_IP  to any port 8982 proto tcp
-sudo ufw deny 8982/tcp
+PG_PORT=<порт_панели>     # выбирается при установке
+
+sudo ufw allow from ПУБЛИЧНЫЙ_IP_VPS1 to any port "$PG_PORT" proto tcp
+sudo ufw allow from ВАШ_АДМИНСКИЙ_IP  to any port "$PG_PORT" proto tcp
+sudo ufw deny "$PG_PORT"/tcp
 sudo ufw reload
 ```
 
 Порядок правил важен: `ufw` применяет первое подходящее, поэтому `allow`
 должны идти до `deny`. Проверить: `sudo ufw status numbered`.
+
+Оговорка: у PasarGuard, в отличие от AWG-панели, путь `/sub/` обязан остаться
+публичным — клиенты открывают ссылку-подписку со своих устройств. Вайтлист
+вешается на `/dashboard/`, `/api/` и `/openapi.json`, но не на `/sub/`.
 
 Для бота используйте **постоянный API-ключ** из `POST /api/api_key`, а не JWT
 администратора: ключ не истекает, отзывается точечно и не требует хранить
@@ -81,13 +110,13 @@ sudo ufw reload
 
 ```bash
 # AWG — Basic Auth, не API-ключ
-AWG_API_URL=https://awg-de.rockfactor.ru:8080
+AWG_API_URL=https://ge01awg.rockfactor.ru
 AWG_API_USER=api_bot
 AWG_API_PASSWORD=<пароль из NGINX_PASSWORD>
 AWG_SERVER_ID=<id сервера внутри панели>
 
-# PasarGuard — постоянный ключ
-PASARGUARD_API_URL=https://ownnet.rockfactor.ru:8982/pg-panel
+# PasarGuard — постоянный ключ; заполняется после установки панели
+PASARGUARD_API_URL=https://own.rockfactor.ru
 PASARGUARD_API_KEY=<ключ из POST /api/api_key>
 ```
 
@@ -131,7 +160,7 @@ tg_{user_id}_{sub_id}_d{device_no}
 обязательно монтировать наружу и включать в резервное копирование:
 
 ```bash
-curl -u api_bot:ПАРОЛЬ https://awg-de.rockfactor.ru:8080/api/config/export \
+curl -u api_bot:ПАРОЛЬ https://ge01awg.rockfactor.ru/api/config/export \
      > awg_backup_$(date +%F).json
 ```
 
@@ -142,8 +171,8 @@ curl -u api_bot:ПАРОЛЬ https://awg-de.rockfactor.ru:8080/api/config/export
 С постороннего хоста — не с VPS-1 и не со своего рабочего места:
 
 ```bash
-curl -m 5 -I https://awg-de.rockfactor.ru:8080/
-curl -m 5 -I https://ownnet.rockfactor.ru:8982/pg-panel/
+curl -m 5 -I https://ge01awg.rockfactor.ru/
+curl -m 5 -I https://own.rockfactor.ru/dashboard/      # после установки панели
 ```
 
 Обе команды должны отваливаться по таймауту или отдавать 403. Если возвращается
