@@ -324,3 +324,72 @@ async def mark_expiry_notified(sub_ids: Sequence[int]) -> None:
         "UPDATE user_subscriptions SET notified_expiry = TRUE WHERE id = ANY($1::bigint[])",
         list(sub_ids),
     )
+
+
+# ── vpn_nodes ────────────────────────────────────────────────────────────────
+# Схема: alembic/versions/002_vpn_nodes.py.
+# Здесь только чтение и переключение флагов: строки нод заводятся руками
+# при вводе ноды в эксплуатацию, это редкая административная операция,
+# а не часть выдачи.
+
+async def get_node(node_id: int) -> Optional[asyncpg.Record]:
+    return await fetchrow("SELECT * FROM vpn_nodes WHERE id = $1", node_id)
+
+
+async def get_node_by_name(name: str) -> Optional[asyncpg.Record]:
+    return await fetchrow("SELECT * FROM vpn_nodes WHERE name = $1", name)
+
+
+async def list_nodes(product: Optional[str] = None) -> list[asyncpg.Record]:
+    """Все ноды, при необходимости — только одной продуктовой линейки."""
+    if product is None:
+        return await fetch("SELECT * FROM vpn_nodes ORDER BY product, priority, id")
+    return await fetch(
+        "SELECT * FROM vpn_nodes WHERE product = $1 ORDER BY priority, id",
+        product,
+    )
+
+
+async def pick_node(product: str) -> Optional[asyncpg.Record]:
+    """
+    Выбрать ноду для новой выдачи.
+
+    Пока это просто «живая нода с наименьшим priority». Полноценный роутер
+    (least-connections, geo) появится, когда нод станет больше одной, —
+    сейчас у него нет входных данных: счётчика клиентов на ноде ещё нет,
+    он придёт вместе со связкой подписок с нодами.
+
+    Условие accepts_new отличает ротацию обфускации от вывода ноды: при
+    ротации нода перестаёт принимать новых, но продолжает обслуживать
+    выданных, пока у них не истекут подписки.
+    """
+    return await fetchrow(
+        """
+        SELECT * FROM vpn_nodes
+        WHERE product = $1 AND is_active AND accepts_new
+        ORDER BY priority, id
+        LIMIT 1
+        """,
+        product,
+    )
+
+
+async def set_node_flags(
+    node_id: int,
+    *,
+    is_active: Optional[bool] = None,
+    accepts_new: Optional[bool] = None,
+) -> None:
+    """Переключить флаги ноды. Незаданные значения остаются прежними."""
+    if is_active is None and accepts_new is None:
+        return
+    await execute(
+        """
+        UPDATE vpn_nodes
+           SET is_active   = COALESCE($2, is_active),
+               accepts_new = COALESCE($3, accepts_new),
+               updated_at  = NOW()
+         WHERE id = $1
+        """,
+        node_id, is_active, accepts_new,
+    )

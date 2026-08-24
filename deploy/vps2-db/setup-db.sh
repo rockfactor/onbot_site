@@ -136,7 +136,13 @@ shared_buffers = 256MB
 work_mem = 8MB
 maintenance_work_mem = 128MB
 
-# Все соединения только по TLS — см. ssl_cert_file ниже
+# Все соединения только по TLS: в pg_hba.conf стоит hostssl, незашифрованные
+# отвергаются. Сертификат берётся из умолчаний пакета Debian/Ubuntu —
+# самоподписанный ssl-cert-snakeoil. Это даёт шифрование канала, но не
+# аутентификацию сервера: клиент его не проверяет. Для приватной сети между
+# двумя своими машинами достаточно; при выносе базы за её пределы сюда
+# понадобятся собственные ssl_cert_file/ssl_key_file и sslmode=verify-full
+# на стороне клиента.
 ssl = on
 
 # Логи: минимум год хранения — требование для платёжной инфраструктуры.
@@ -154,7 +160,12 @@ log_line_prefix = '%m [%p] %q%u@%d '
 timezone = 'UTC'
 CONF
 
-grep -q "include_dir = 'conf.d'" "${PG_CONF_DIR}/postgresql.conf" \
+# Проверка привязана к началу строки: без якоря grep нашёл бы и закомментированный
+# `#include_dir = 'conf.d'`, решил бы, что подключать нечего, и весь файл выше
+# молча не применился бы — а падения при этом не будет, база просто останется
+# слушать localhost.
+grep -Eq "^[[:space:]]*include_dir[[:space:]]*=[[:space:]]*'conf\.d'" \
+    "${PG_CONF_DIR}/postgresql.conf" \
     || echo "include_dir = 'conf.d'" >> "${PG_CONF_DIR}/postgresql.conf"
 
 # ── pg_hba.conf ──────────────────────────────────────────────────────────────
@@ -188,7 +199,15 @@ grep -q "^password_encryption" "${CONF_D}/10-ownnetbot.conf" \
 
 info "Настраиваю firewall"
 
+# ВНИМАНИЕ: reset стирает ВСЕ существующие правила ufw, а не только наши.
+# Это единственное место, где скрипт не идемпотентен по-настоящему: если
+# на сервере есть правила, добавленные помимо него, при повторном запуске
+# они будут потеряны. Проверьте `ufw status numbered` перед перезапуском.
 apt-get install -y ufw >/dev/null
+if ufw status 2>/dev/null | grep -q '^Status: active'; then
+    warn "ufw уже активен — правила будут сброшены и заданы заново"
+    ufw status numbered || true
+fi
 ufw --force reset >/dev/null 2>&1 || true
 ufw default deny incoming >/dev/null
 ufw default allow outgoing >/dev/null
@@ -207,8 +226,25 @@ sleep 2
 
 systemctl is-active --quiet postgresql || die "PostgreSQL не запустился, смотрите: journalctl -u postgresql -n 50"
 
+# Проверяем, а не просто печатаем: если conf.d по какой-то причине не подключился,
+# база останется на localhost, скрипт отрапортует «Готово», а обнаружится это
+# только на VPS-1 сообщением «PostgreSQL недоступен» с четырьмя ложными версиями
+# причины. Лучше упасть здесь, где видно настоящую.
 LISTEN="$(sudo -u postgres psql -tAc 'SHOW listen_addresses')"
+if [[ ",${LISTEN// /}," != *",${DB_BIND_IP},"* ]]; then
+    die "PostgreSQL слушает '${LISTEN}', адреса ${DB_BIND_IP} среди них нет.
+Проверьте, что ${PG_CONF_DIR}/postgresql.conf содержит активную строку
+include_dir = 'conf.d' и что файл ${CONF_D}/10-ownnetbot.conf на месте."
+fi
 info "listen_addresses = ${LISTEN}"
+
+HBA_OK="$(sudo -u postgres psql -tAc \
+    "SELECT count(*) FROM pg_hba_file_rules WHERE '${DB_USER}' = ANY(user_name) AND error IS NULL")"
+if [[ "$HBA_OK" == "0" ]]; then
+    die "Правило для роли ${DB_USER} не попало в pg_hba.conf или содержит ошибку. Смотрите:
+sudo -u postgres psql -c 'SELECT * FROM pg_hba_file_rules WHERE error IS NOT NULL'"
+fi
+info "Правило pg_hba для ${DB_USER} принято"
 
 # ── Итог ─────────────────────────────────────────────────────────────────────
 

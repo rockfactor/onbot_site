@@ -21,6 +21,11 @@ DB_NAME="${DB_NAME:-vpnbot}"
 
 read -rp "Сколько дней хранить бэкапы [30]: " KEEP_DAYS
 KEEP_DAYS="${KEEP_DAYS:-30}"
+# Значение уходит в генерируемый скрипт без кавычек и дальше в find -mtime:
+# нечисловое сломало бы удаление старых копий, причём молча и только через
+# сутки, при первом запуске по таймеру.
+[[ "$KEEP_DAYS" =~ ^[0-9]+$ ]] && (( KEEP_DAYS >= 1 )) \
+    || die "Срок хранения — целое число дней, не меньше 1"
 
 read -rp "Каталог для бэкапов [/var/backups/postgresql]: " BACKUP_DIR
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/postgresql}"
