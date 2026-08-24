@@ -5,20 +5,17 @@
 готовый текст `.conf`. Развёртывание и ограничения панели описаны
 в deploy/panels/awg/README.md.
 
-Что делает адаптер сверх простого HTTP-клиента:
+Что делает адаптер сверх простого HTTP-клиента: переписывает `Endpoint`
+на доменное имя ноды. Панель подставляет туда свой публичный IP,
+а конфигурация живёт у клиента месяцами: с доменом переезд решается
+A-записью, с зашитым IP — перевыпуском конфигураций всем активным
+подписчикам.
 
-  1. Пытается подставить индивидуальные параметры мусорных пакетов
-     (Jc/Jmin/Jmax) на каждую выдачу. Общие параметры (S1-S4, H1-H4)
-     задаются при создании интерфейса и здесь не трогаются: их изменение
-     отключает всех разом.
-
-     ВНИМАНИЕ: на панели 1.8.5 это не работает — см. create_client()
-     и раздел «Ограничение панели 1.8.5» в deploy/panels/awg/README.md.
-
-  2. Переписывает `Endpoint` на доменное имя ноды. Панель подставляет туда
-     свой публичный IP, а конфигурация живёт у клиента месяцами: с доменом
-     переезд решается A-записью, с зашитым IP — перевыпуском конфигураций
-     всем активным подписчикам.
+Параметрами обфускации адаптер не управляет. Общие (S1-S4, H1-H4)
+задаются один раз при создании интерфейса; индивидуальный профиль
+мусорных пакетов (Jc/Jmin/Jmax) панель 1.8.5 на клиента не принимает —
+см. create_client() и «Ограничение панели 1.8.5»
+в deploy/panels/awg/README.md.
 
 ВНИМАНИЕ, требует проверки на живой панели. У проекта нет опубликованной
 спецификации API, набор путей взят из таблицы операций в
@@ -42,7 +39,6 @@ from typing import Any, Optional
 
 import aiohttp
 
-from vpn_api.awg_obfuscation import generate_client_junk
 from vpn_api.base import (
     ClientRef,
     ConfigRewriteError,
@@ -195,16 +191,17 @@ class AmneziaWGAdapter(VPNPanelAdapter):
         return None
 
     async def create_client(self, name: str) -> IssuedClient:
-        # ТРЕБУЕТ РЕШЕНИЯ. Проверено на живой панели 23.08.2026: поле
-        # i_settings задаёт только I1–I5, а Jc/Jmin/Jmax панель копирует
-        # клиенту из параметров сервера. То есть эта передача профиля
-        # ни на что не влияет: у всех клиентов интерфейса он одинаковый.
-        # Разнести профили можно только по разным интерфейсам (мультисервер).
-        junk = generate_client_junk()
+        # Индивидуальный профиль мусорных пакетов не передаём: проверено
+        # на живой панели 23.08.2026, поле i_settings задаёт только I1–I5,
+        # а Jc/Jmin/Jmax панель копирует клиенту из параметров сервера.
+        # Слать их в i_settings бессмысленно и небезопасно: 1.8.5 лишние
+        # ключи игнорирует, но версия со строгой проверкой уронит выдачу.
+        # Разнести профили можно только по разным интерфейсам (мультисервер),
+        # см. «Ограничение панели 1.8.5» в deploy/panels/awg/README.md.
         payload = await self._request(
             "POST",
             f"/api/servers/{self._sid}/clients",
-            json_body={"name": name, "i_settings": junk.as_dict()},
+            json_body={"name": name},
         )
         if not isinstance(payload, dict):
             raise PanelError(
@@ -223,14 +220,11 @@ class AmneziaWGAdapter(VPNPanelAdapter):
         if self.node.client_endpoint:
             config_text = replace_peer_endpoint(config_text, self.node.client_endpoint)
 
-        logger.info(
-            "Клиент %s создан на ноде %s (Jc=%s)", name, self.node.name, junk.Jc
-        )
+        logger.info("Клиент %s создан на ноде %s", name, self.node.name)
         return IssuedClient(
             client_id=str(client_id),
             name=name,
             config_text=config_text,
-            extra={"junk": junk.as_dict()},
         )
 
     async def suspend(self, client_id: str) -> None:
