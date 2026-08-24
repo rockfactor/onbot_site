@@ -220,18 +220,35 @@ chown root:root "$WEB_ROOT"
 # ── Проверка связи с БД до запуска бота ──────────────────────────────────────
 
 info "Проверяю доступность PostgreSQL на ${DB_HOST}"
+
+# Вывод проверки сохраняем и показываем при отказе. Раньше он уходил
+# в /dev/null, и любая причина — неверный пароль, отказ TLS, недоступный
+# порт, ошибка импорта — выглядела одинаково: список из четырёх версий,
+# из которых верна одна. Настоящее сообщение asyncpg называет причину сразу.
+DB_CHECK_LOG="$(mktemp)"
+chmod 600 "$DB_CHECK_LOG"
 if sudo -u "$APP_USER" bash -c "cd '$APP_DIR' && venv/bin/python -c '
 import asyncio, sys
 from db.pool import healthcheck
 sys.exit(0 if asyncio.run(healthcheck()) else 1)
-'" 2>/dev/null; then
+'" >"$DB_CHECK_LOG" 2>&1; then
     info "PostgreSQL отвечает"
+    rm -f "$DB_CHECK_LOG"
 else
-    die "PostgreSQL недоступен. Проверьте:
-  - запущен ли setup-db.sh на VPS-2
-  - верен ли пароль
-  - открыт ли порт 5432 для IP этого сервера (ufw на VPS-2)
-  - совпадает ли IP в pg_hba.conf с приватным IP VPS-1"
+    DB_CHECK_OUT="$(cat "$DB_CHECK_LOG")"
+    rm -f "$DB_CHECK_LOG"
+    warn "Ответ проверки:"
+    # Пароль вырезаем подстановкой bash, а не sed: в нём могут быть символы,
+    # которые sed примет за синтаксис. Кавычки вокруг переменной обязательны —
+    # без них шаблон разбирается как глоб, и пароль со звёздочкой или обратной
+    # косой чертой сопоставился бы не с собой.
+    printf '%s\n' "${DB_CHECK_OUT//"$DB_PASSWORD"/***}" | sed 's/^/    /' >&2
+    die "PostgreSQL недоступен. Сообщение выше называет причину; типичные:
+  - 'password authentication failed' — пароль не тот, что выдал setup-db.sh
+  - 'no pg_hba.conf entry' — в pg_hba.conf стоит другой приватный IP VPS-1
+  - 'Connection refused' / таймаут — база слушает только localhost
+    либо порт 5432 закрыт в ufw на VPS-2
+  - 'no encryption' / ошибка SSL — сервер требует hostssl, клиент не согласовал TLS"
 fi
 
 # ── Миграции ─────────────────────────────────────────────────────────────────
@@ -322,6 +339,14 @@ fi
 # ── Firewall ─────────────────────────────────────────────────────────────────
 
 info "Настраиваю firewall"
+
+# reset стирает ВСЕ правила ufw, не только наши. Если на сервере появится
+# что-то помимо этого скрипта — админский туннель, доступ к базе, — при
+# повторном запуске правила будут потеряны.
+if ufw status 2>/dev/null | grep -q '^Status: active'; then
+    warn "ufw уже активен — правила будут сброшены и заданы заново"
+    ufw status numbered || true
+fi
 ufw --force reset >/dev/null 2>&1 || true
 ufw default deny incoming >/dev/null
 ufw default allow outgoing >/dev/null
@@ -367,9 +392,11 @@ echo "  curl -s 'https://api.telegram.org/bot<ТОКЕН>/getWebhookInfo'"
 echo
 echo "${BOLD}Осталось сделать вручную:${RESET}"
 echo "  1. Заполнить в ${APP_DIR}/.env реквизиты ЮКассы, S3 и VPN-панелей"
-echo "  2. Положить about.txt и welcome.txt в ${APP_DIR}"
-echo "  3. Ограничить доступ к панелям по IP этого сервера"
-echo "     (см. deploy/panels/README.md)"
-echo "  4. Проверить TLS: https://www.ssllabs.com/ssltest/analyze.html?d=${DOMAIN_PUNY}"
+echo "  2. Внести публичный IP этого сервера в вайтлист панелей:"
+echo "     ${SERVER_IP:-<IP этого сервера>} — см. deploy/panels/README.md"
+echo "  3. Проверить TLS: https://www.ssllabs.com/ssltest/analyze.html?d=${DOMAIN_PUNY}"
+echo
+echo "  about.txt и welcome.txt приезжают вместе с репозиторием — класть"
+echo "  их отдельно не нужно."
 echo
 warn "После правки .env: sudo systemctl restart ownnetbot-bot"
